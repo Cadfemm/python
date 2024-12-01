@@ -9,10 +9,10 @@ app = Flask(__name__)
 CORS(app)
 
 # Load the pre-trained models
-pickle_file_path_model1 = r'C:\python\model\best_random_forest_model.pkl'
-pickle_file_path_model2 = r'C:\python\model\10M.pkl'
-pickle_file_path_model3 = r'C:\python\model\TugRight.pkl'
-pickle_file_path_model4 = r'C:\python\model\10Right.pkl'
+pickle_file_path_model1 = 'model/best_random_forest_model.pkl'
+pickle_file_path_model2 = 'model/10M.pkl'
+pickle_file_path_model3 = 'model/TugRight.pkl'
+pickle_file_path_model4 = 'model/10Right.pkl'
 
 with open(pickle_file_path_model1, 'rb') as file1:
     model1 = pickle.load(file1)
