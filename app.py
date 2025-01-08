@@ -2,174 +2,120 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import pandas as pd
 import pickle
-from sklearn.preprocessing import LabelEncoder
-import shutil
+import numpy as np
+import warnings
 
 app = Flask(__name__)
 CORS(app)
 
-# Load the pre-trained models
-pickle_file_path_model1 = 'model/best_random_forest_model.pkl'
-pickle_file_path_model2 = 'model/10M.pkl'
-pickle_file_path_model3 = 'model/TugRight.pkl'
-pickle_file_path_model4 = 'model/10Right.pkl'
+# Suppress warnings for version mismatches
+warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 
-with open(pickle_file_path_model1, 'rb') as file1:
-    model1 = pickle.load(file1)
-
-with open(pickle_file_path_model2, 'rb') as file2:
-    model2 = pickle.load(file2)
-
-with open(pickle_file_path_model3, 'rb') as file3:
-    model3 = pickle.load(file3)
-
-with open(pickle_file_path_model4, 'rb') as file4:
-    model4 = pickle.load(file4)
-
-# LabelEncoder for Gender column
-label_encoder = LabelEncoder()
-
-# Function to update SCONE integration_accuracy
-def update_integration_accuracy(file_path, new_accuracy, new_file_name):
+# Function to load model safely
+def load_model(file_path):
     try:
-        # Read the SCONE file content
-        with open(file_path, 'r') as file:
-            content = file.readlines()
-
-        # Update the 'integration_accuracy' parameter
-        updated_content = []
-        for line in content:
-            if 'integration_accuracy' in line:
-                line = f'integration_accuracy = {new_accuracy}\n'
-            updated_content.append(line)
-
-        # Construct new file path for saving the updated file
-        directory = r"C:\python\configs\Tutorials2"
-        new_file_path = f"{directory}\\{new_file_name}"
-
-        # Write the updated content to the new file
-        with open(new_file_path, 'w') as file:
-            file.writelines(updated_content)
-
-        print(f"Updated 'integration_accuracy' to {new_accuracy} and saved as {new_file_name} in {directory}")
-
-    except FileNotFoundError:
-        print(f"Error: File not found at {file_path}. Please check the path.")
+        with open(file_path, 'rb') as file:
+            model_metadata = pickle.load(file)
+        if not isinstance(model_metadata, dict):
+            raise ValueError("The loaded model is not in the expected dictionary format.")
+        return model_metadata
+    except ValueError as ve:
+        print(f"ValueError while loading model from {file_path}: {str(ve)}")
+        raise RuntimeError(
+            f"Model {file_path} is incompatible with the current scikit-learn version. "
+            f"Consider upgrading scikit-learn to match the model version or retrain the model."
+        )
     except Exception as e:
-        print(f"An error occurred: {e}")
+        print(f"Error loading model from {file_path}: {str(e)}")
+        raise
 
-# SCONE configuration file path
-scone_file_path = r"C:\python\configs\Tutorials2\Tutorial 4a - Gait - OpenSim.scone"
-new_file_name = "changed-gate.scone"  # Set the new file name
+# Load model5 with metadata
+try:
+    model_metadata = load_model('model/Right_Lower_Limb_Model (5).pkl')
+    pipeline = model_metadata['pipeline']  # Trained model pipeline
+    bins = model_metadata['bins']  # Age bins for bucketing
+    labels = model_metadata['labels']  # Corresponding labels for Age bins
+    columns = model_metadata['columns']  # Expected column structure
+except Exception as e:
+    print(f"Unexpected error during model loading: {e}")
+    raise
 
-# Model 1 Prediction
-@app.route('/predict_model1', methods=['POST'])
-def predict_model1():
+# Function to preprocess input data
+def preprocess_input_data(input_data):
+    """
+    Preprocess the input data according to the model requirements.
+    """
     try:
-        data = request.json
-        print("Received data for model 1:", data)
-
-        model1_data = data.get("model1_inputs")
+        # Convert input data to a DataFrame
+        input_df = pd.DataFrame([input_data])
+# Ensure numeric fields are converted to proper data types
+        numeric_fields = ['Age', 'Days of treatment', 
+                          'Initial Right Lower Limb Hip Flexion', 
+                          'Initial Right Lower Limb Hip Extension',
+                          'Initial Right Lower Limb Hip Abduction', 
+                          'Initial Right Lower Limb Hip Adduction',
+                          'Initial Right Lower Limb Knee Flexion', 
+                          'Initial Right Lower Limb Knee Extension',
+                          'Initial Right Lower Limb Ankle Dorsiflexion', 
+                          'Initial Right Lower Limb Ankle Plantarflexion']
         
-        if model1_data:
-            model1_df = pd.DataFrame([model1_data])
-            model1_df.rename(columns={"DaysOfTreatment": "Days Of Treatment"}, inplace=True)
-            model1_df['Gender'] = label_encoder.fit_transform(model1_df['Gender'])
-            model1_prediction = model1.predict(model1_df)[0]
+        for field in numeric_fields:
+            if field in input_df:
+                input_df[field] = pd.to_numeric(input_df[field], errors='coerce')
 
-            # Set integration_accuracy based on prediction value
-            if model1_prediction < 0:
-                integration_accuracy_value = 0.0013
-            else:
-                integration_accuracy_value = model1_prediction
+        # Preprocess: Label encode `Gender` and one-hot encode `Age`
+        input_df['Gender'] = input_df['Gender'].apply(lambda x: 1 if x == 'Male' else 0)
+        input_df['Age Group'] = pd.cut(
+            input_df['Age'], bins=bins, labels=labels, right=False
+        )
+        input_df = pd.get_dummies(input_df, columns=["Age Group"], drop_first=True)
 
-            # Update the integration_accuracy in the SCONE configuration file
-            update_integration_accuracy(scone_file_path, integration_accuracy_value, new_file_name)
-        else:
-            model1_prediction = None
+        # Align input DataFrame with training columns
+        for col in columns:
+            if col not in input_df:
+                input_df[col] = 0  # Add missing columns with default value 0
 
-        return jsonify({
-            "result1": model1_prediction
-        })
-
+        input_df = input_df[columns]  # Ensure column order matches training data
+        return input_df
     except Exception as e:
-        print("Error:", e)  # Log the error for debugging
-        return jsonify({"error": str(e)}), 400
+        print(f"Error in preprocessing: {str(e)}")
+        raise
 
-# Model 2 Prediction
-@app.route('/predict_model2', methods=['POST'])
-def predict_model2():
+# Flask API for model5 prediction
+@app.route('/predict_model5', methods=['POST'])
+def predict_model5():
     try:
-        data = request.json
-        print("Received data for model 2:", data)
+        data = request.json  # Parse incoming JSON data
+        print("Received data for model 5:", data)
 
-        model2_data = data.get("model2_inputs")
-        
-        if model2_data:
-            model2_df = pd.DataFrame([model2_data])
-            model2_df.rename(columns={"DaysOfTreatment": "Days Of Treatment"}, inplace=True)
-            model2_df['Gender'] = label_encoder.fit_transform(model2_df['Gender'])
-            model2_prediction = model2.predict(model2_df)[0]
-        else:
-            model2_prediction = None
+        if not data or 'inputs' not in data:
+            return jsonify({"error": "No data or invalid data format provided"}), 400
 
-        return jsonify({
-            "result2": model2_prediction
-        })
+        model5_data = data['inputs']  # Extract inputs for model 5
 
-    except Exception as e:
-        print("Error:", e)  # Log the error for debugging
-        return jsonify({"error": str(e)}), 400
+        # Preprocess input data
+        processed_df = preprocess_input_data(model5_data)
 
-# Model 3 Prediction
-@app.route('/predict_model3', methods=['POST'])
-def predict_model3():
-    try:
-        data = request.json
-        print("Received data for model 3:", data)
+        # Debugging information
+        print("Processed DataFrame columns:", processed_df.columns.tolist())
+        print("Processed DataFrame:\n", processed_df)
 
-        model3_data = data.get("model3_inputs")
-        
-        if model3_data:
-            model3_df = pd.DataFrame([model3_data])
-            model3_df.rename(columns={"DaysOfTreatment": "Days Of Treatment"}, inplace=True)
-            model3_df['Gender'] = label_encoder.fit_transform(model3_df['Gender'])
-            model3_prediction = model3.predict(model3_df)[0]
-        else:
-            model3_prediction = None
+        # Make prediction
+        prediction = pipeline.predict(processed_df)
+        print("Prediction result for model 5:", prediction)
 
-        return jsonify({
-            "result3": model3_prediction
-        })
+        # Convert predictions to a Python list
+        prediction_list = prediction.tolist()
+
+        # Format predictions: Each prediction in a separate line
+        formatted_predictions = [f"Prediction {i+1}: {pred}" for i, pred in enumerate(prediction)]
+
+        # Return formatted predictions
+        return jsonify({"result5": prediction_list})
 
     except Exception as e:
-        print("Error:", e)  # Log the error for debugging
-        return jsonify({"error": str(e)}), 400
-
-# Model 4 Prediction
-@app.route('/predict_model4', methods=['POST'])
-def predict_model4():
-    try:
-        data = request.json
-        print("Received data for model 4:", data)
-
-        model4_data = data.get("model4_inputs")
-        
-        if model4_data:
-            model4_df = pd.DataFrame([model4_data])
-            model4_df.rename(columns={"DaysOfTreatment": "Days Of Treatment"}, inplace=True)
-            model4_df['Gender'] = label_encoder.fit_transform(model4_df['Gender'])
-            model4_prediction = model4.predict(model4_df)[0]
-        else:
-            model4_prediction = None
-
-        return jsonify({
-            "result4": model4_prediction
-        })
-
-    except Exception as e:
-        print("Error:", e)  # Log the error for debugging
-        return jsonify({"error": str(e)}), 400
+        print(f"Error in predict_model5: {str(e)}")
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(debug=True)
