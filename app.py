@@ -52,7 +52,7 @@ def extract_only_numbers(lines):
             all_numbers.append(formatted_num)
     return all_numbers
 
-def get_latest_pdf(folder_path="model/tymo"):
+def get_latest_pdf(folder_path="data/tymo"):
     """Get the most recent PDF file from the specified folder"""
     # Ensure the folder exists
     if not os.path.exists(folder_path):
@@ -85,7 +85,7 @@ def get_tymo_values():
     numbers = extract_only_numbers(lines)
     
     # Adjust indices to be 0-based
-    target_indices = [75, 76, 77, 65, 70, 84, 85, 86, 87, 124, 127]
+    target_indices = [3,5,9,11,19,21,27,29,75, 76, 77, 65, 70, 84, 85, 86, 87, 124, 127]
     
     # For debugging
     print(f"Found {len(numbers)} numbers in the PDF")
