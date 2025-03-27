@@ -1,121 +1,101 @@
+# app.py (Flask backend)
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import pandas as pd
-import pickle
-import numpy as np
-import warnings
+from pdfminer.high_level import extract_pages
+from pdfminer.layout import LTTextContainer
+import re
+import os
+import glob
+from datetime import datetime
 
 app = Flask(__name__)
 CORS(app)
 
-# Suppress warnings for version mismatches
-warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
+def extract_text_with_all_empty_lines(pdf_path):
+    elements = []
+    for page_layout in extract_pages(pdf_path):
+        page_height = page_layout.height
+        for element in page_layout:
+            if isinstance(element, LTTextContainer):
+                text = element.get_text().strip()
+                y_pos = page_height - element.y0
+                elements.append((text, y_pos))
+    elements.sort(key=lambda x: x[1])
+    if len(elements) >= 2:
+        height_diffs = [elements[i+1][1] - elements[i][1] for i in range(len(elements)-1)]
+        avg_line_height = sum(height_diffs) / len(height_diffs)
+        min_line_height = avg_line_height * 0.7
+    else:
+        min_line_height = 10
 
-# Function to load model safely
-def load_model(file_path):
-    try:
-        with open(file_path, 'rb') as file:
-            model_metadata = pickle.load(file)
-        if not isinstance(model_metadata, dict):
-            raise ValueError("The loaded model is not in the expected dictionary format.")
-        return model_metadata
-    except ValueError as ve:
-        print(f"ValueError while loading model from {file_path}: {str(ve)}")
-        raise RuntimeError(
-            f"Model {file_path} is incompatible with the current scikit-learn version. "
-            f"Consider upgrading scikit-learn to match the model version or retrain the model."
-        )
-    except Exception as e:
-        print(f"Error loading model from {file_path}: {str(e)}")
-        raise
+    result_lines = []
+    if not elements:
+        return result_lines
+    result_lines.append(elements[0][0])
+    for i in range(len(elements)-1):
+        current_y = elements[i][1]
+        next_y = elements[i+1][1]
+        gap = next_y - current_y
+        if gap > min_line_height:
+            empty_lines = int(round(gap / min_line_height)) - 1
+            for _ in range(empty_lines):
+                result_lines.append("")
+        result_lines.append(elements[i+1][0])
+    return result_lines
 
-# Load model5 with metadata
-try:
-    model_metadata = load_model('model/Right_Lower_Limb_Model (5).pkl')
-    pipeline = model_metadata['pipeline']  # Trained model pipeline
-    bins = model_metadata['bins']  # Age bins for bucketing
-    labels = model_metadata['labels']  # Corresponding labels for Age bins
-    columns = model_metadata['columns']  # Expected column structure
-except Exception as e:
-    print(f"Unexpected error during model loading: {e}")
-    raise
+def extract_only_numbers(lines):
+    all_numbers = []
+    for line in lines:
+        numbers = re.findall(r'\d{1,3}(?:,\d{3})*(?:\.\d+)?', line)
+        for num in numbers:
+            formatted_num = float(num.replace(",", "")) if '.' in num else int(num.replace(",", ""))
+            all_numbers.append(formatted_num)
+    return all_numbers
 
-# Function to preprocess input data
-def preprocess_input_data(input_data):
-    """
-    Preprocess the input data according to the model requirements.
-    """
-    try:
-        # Convert input data to a DataFrame
-        input_df = pd.DataFrame([input_data])
-# Ensure numeric fields are converted to proper data types
-        numeric_fields = ['Age', 'Days of treatment', 
-                          'Initial Right Lower Limb Hip Flexion', 
-                          'Initial Right Lower Limb Hip Extension',
-                          'Initial Right Lower Limb Hip Abduction', 
-                          'Initial Right Lower Limb Hip Adduction',
-                          'Initial Right Lower Limb Knee Flexion', 
-                          'Initial Right Lower Limb Knee Extension',
-                          'Initial Right Lower Limb Ankle Dorsiflexion', 
-                          'Initial Right Lower Limb Ankle Plantarflexion']
-        
-        for field in numeric_fields:
-            if field in input_df:
-                input_df[field] = pd.to_numeric(input_df[field], errors='coerce')
+def get_latest_pdf(folder_path="model/tymo"):
+    """Get the most recent PDF file from the specified folder"""
+    # Ensure the folder exists
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path, exist_ok=True)
+        return None
+    
+    # Get all PDF files in the folder
+    pdf_files = glob.glob(os.path.join(folder_path, "*.pdf"))
+    
+    if not pdf_files:
+        return None
+    
+    # Get the most recent file based on modification time
+    latest_pdf = max(pdf_files, key=os.path.getmtime)
+    
+    return latest_pdf
 
-        # Preprocess: Label encode `Gender` and one-hot encode `Age`
-        input_df['Gender'] = input_df['Gender'].apply(lambda x: 1 if x == 'Male' else 0)
-        input_df['Age Group'] = pd.cut(
-            input_df['Age'], bins=bins, labels=labels, right=False
-        )
-        input_df = pd.get_dummies(input_df, columns=["Age Group"], drop_first=True)
+@app.route("/get-tymo-values", methods=["POST"])
+def get_tymo_values():
+    # Get the most recent PDF file
+    latest_pdf = get_latest_pdf()
+    
+    if not latest_pdf:
+        return jsonify({"error": "No PDF files found in the tymo folder"}), 404
+    
+    # Log which file is being processed
+    print(f"Processing latest PDF: {latest_pdf}")
+    
+    lines = extract_text_with_all_empty_lines(latest_pdf)
+    numbers = extract_only_numbers(lines)
+    
+    # Adjust indices to be 0-based
+    target_indices = [75, 76, 77, 65, 70, 84, 85, 86, 87, 124, 127]
+    
+    # For debugging
+    print(f"Found {len(numbers)} numbers in the PDF")
+    
+    result_values = [numbers[i] if i < len(numbers) else None for i in target_indices]
+    return jsonify({
+        "values": result_values,
+        "source_file": os.path.basename(latest_pdf),
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    })
 
-        # Align input DataFrame with training columns
-        for col in columns:
-            if col not in input_df:
-                input_df[col] = 0  # Add missing columns with default value 0
-
-        input_df = input_df[columns]  # Ensure column order matches training data
-        return input_df
-    except Exception as e:
-        print(f"Error in preprocessing: {str(e)}")
-        raise
-
-# Flask API for model5 prediction
-@app.route('/predict_model5', methods=['POST'])
-def predict_model5():
-    try:
-        data = request.json  # Parse incoming JSON data
-        print("Received data for model 5:", data)
-
-        if not data or 'inputs' not in data:
-            return jsonify({"error": "No data or invalid data format provided"}), 400
-
-        model5_data = data['inputs']  # Extract inputs for model 5
-
-        # Preprocess input data
-        processed_df = preprocess_input_data(model5_data)
-
-        # Debugging information
-        print("Processed DataFrame columns:", processed_df.columns.tolist())
-        print("Processed DataFrame:\n", processed_df)
-
-        # Make prediction
-        prediction = pipeline.predict(processed_df)
-        print("Prediction result for model 5:", prediction)
-
-        # Convert predictions to a Python list
-        prediction_list = prediction.tolist()
-
-        # Format predictions: Each prediction in a separate line
-        formatted_predictions = [f"Prediction {i+1}: {pred}" for i, pred in enumerate(prediction)]
-
-        # Return formatted predictions
-        return jsonify({"result5": prediction_list})
-
-    except Exception as e:
-        print(f"Error in predict_model5: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run(debug=True)
