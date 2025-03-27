@@ -52,7 +52,7 @@ def extract_only_numbers(lines):
             all_numbers.append(formatted_num)
     return all_numbers
 
-def get_latest_pdf(folder_path="data/tymo"):
+def get_latest_pdf(folder_path="model/tymo"):
     """Get the most recent PDF file from the specified folder"""
     # Ensure the folder exists
     if not os.path.exists(folder_path):
